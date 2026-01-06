@@ -1,0 +1,17 @@
+keycloaks:
+  - name: kc-main
+    access:
+      token_url: "https://auth.example.com/realms/main/protocol/openid-connect/token"
+      client_id: "svc-client"
+      client_secret: "${KC_MAIN_ACCESS_CLIENT_SECRET}"
+      grant_type: "client_credentials"
+      fallback_ttl_seconds: 300
+      prefetch_seconds: 30
+    refresh:
+      token_url: "https://auth.example.com/realms/main/protocol/openid-connect/token"
+      client_id: "svc-client"
+      client_secret: "${KC_MAIN_REFRESH_CLIENT_SECRET}"
+      grant_type: "refresh_token"
+cache:
+  backend: "tlru"
+  maxsize: 1024

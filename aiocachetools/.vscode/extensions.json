@@ -1,0 +1,6 @@
+{
+    "recommendations": [
+        "charliermarsh.ruff", // Ruff extension
+        "ms-python.python" // Python extension
+    ]
+}

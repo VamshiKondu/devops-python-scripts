@@ -65,22 +65,22 @@ class UserService:
 
 ### 3. Class Method Caching (`test_classmethod_cache`)
 
-Useful for singleton-style services where the cache is shared across the class. **Note:** Use `ignore=("cls",)` so the class object itself doesn't affect the cache key.
+Useful for singleton-style services where the cache is shared across the class.
 
 ```python
 class GlobalConfig:
     _cache = TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 600)
 
-    @cachedmethod(cache=lambda cls: cls._cache, ignore=("cls",))
+    @cachedmethod(cache=lambda cls: cls._cache, ignore=("key2",))
     @classmethod
-    async def get_setting(cls, key: str):
-        return await load_setting(key)
+    async def get_setting(cls, key1: str, key2: Any):
+        return await load_setting(key1, key2)
 
 ```
 
 ### 4. Static-Like Method Caching (`test_cachemethod_staticmethod`)
 
-If a method is functionally static but you want it to use an instance-bound cache, use `ignore=("self",)`.
+If a method is functionally static but you want it to use an instance-bound cache.
 
 ```python
 class MathOps:

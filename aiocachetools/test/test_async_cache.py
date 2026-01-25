@@ -1,15 +1,9 @@
 import asyncio
-import logging
 
 import pytest
 from cachetools import TLRUCache
 
-from async_cache import cached
-
-# Define the logger for your package
-logger = logging.getLogger("aiocachetools")
-# Add NullHandler so it stays silent by default
-logger.addHandler(logging.NullHandler())
+from async_cache import cached, cachedmethod
 
 
 @pytest.mark.asyncio
@@ -143,3 +137,74 @@ async def test_size_limit() -> None:
     assert (1, 2) not in cache
     assert (2, 3) in cache
     assert (3, 4) in cache
+
+
+################################cachemethod tests###############################
+
+
+@pytest.mark.asyncio
+async def test_cachemethod_staticmethod() -> None:
+    """Test that the cached decorator works with static methods."""
+
+    class MathOps:
+        call_count = 0
+
+        @staticmethod
+        @cached(cache=TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 10))
+        async def static_multiply(a: int, b: int) -> int:
+            MathOps.call_count += 1
+            await asyncio.sleep(0.1)
+            return a * b
+
+    result1 = await MathOps.static_multiply(2, 3)
+    result2 = await MathOps.static_multiply(2, 3)  # Should hit cache
+
+    assert result1 == 6
+    assert result2 == 6
+    assert MathOps.call_count == 1  # Function called only once
+
+
+@pytest.mark.asyncio
+async def test_classmethod_cache() -> None:
+    """Test that the cached decorator works with class methods."""
+
+    class MathOps:
+        call_count = 0
+        __cache = TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 10)
+
+        @classmethod
+        @cachedmethod(cache=lambda cls: cls._MathOps__cache, ignore=("cls",))
+        async def class_add(cls, a: int, b: int) -> int:
+            cls.call_count += 1
+            await asyncio.sleep(0.1)
+            return a + b
+
+    result1 = await MathOps.class_add(4, 5)
+    result2 = await MathOps.class_add(4, 5)  # Should hit
+    assert result1 == 9
+    assert result2 == 9
+    assert MathOps.call_count == 1  # Function called only once
+
+
+@pytest.mark.asyncio
+async def test_instance_method_cache() -> None:
+    """Test that the cachedmethod decorator works with instance methods."""
+
+    class Counter:
+        def __init__(self) -> None:
+            self.call_count = 0
+            self._cache = TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 10)
+
+        @cachedmethod(cache=lambda self: self._cache, ignore=("self",))
+        async def increment(self, value: int) -> int:
+            self.call_count += 1
+            await asyncio.sleep(0.1)
+            return value + 1
+
+    counter = Counter()
+    result1 = await counter.increment(5)
+    result2 = await counter.increment(5)  # Should hit cache
+
+    assert result1 == 6
+    assert result2 == 6
+    assert counter.call_count == 1  # Function called only once

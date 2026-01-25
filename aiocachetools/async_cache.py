@@ -13,6 +13,10 @@ from typing import (
 )
 
 from cachetools.keys import hashkey, methodkey
+from loguru import logger
+
+# Setup Loguru for library use
+logger.disable("aiocachetools")
 
 _KT = TypeVar("_KT")
 _T = TypeVar("_T")
@@ -238,22 +242,27 @@ def cachedmethod(
     if lock is not None:
         raise NotImplementedError("cachetools_async does not support `lock`")
 
-    def decorator(method: Callable[..., Awaitable]) -> Awaitable:
-        if not iscoroutinefunction(method):
-            raise TypeError(f"Expected coroutine function, got {method}")
+    def decorator(actual_fn: Callable[..., Awaitable]) -> Awaitable:
+        actual_fn = actual_fn
 
-        @wraps(method)
+        if isinstance(actual_fn, staticmethod) or isinstance(actual_fn, classmethod):
+            actual_fn = actual_fn.__func__
+
+        if not iscoroutinefunction(actual_fn):
+            raise TypeError(f"Expected coroutine function, got {actual_fn}")
+
+        @wraps(actual_fn)
         async def wrapper(
-            self: object, *args: tuple[Any, ...], **kwargs: dict[str, Any]
+            self_or_cls: object, *args: tuple[Any, ...], **kwargs: dict[str, Any]
         ) -> _T:
-            c = cache(self)
+            c = cache(self_or_cls) if callable(cache) else cache
             if c is None:
-                return await method(self, *args, **kwargs)
+                return await actual_fn(self_or_cls, *args, **kwargs)
 
             # For methods, include 'self' in the bound args
             # so ignore can refer to it by name or index 0
-            all_args = (self,) + args
-            k = _filtered_key(key, method, all_args, kwargs, ignore)
+            all_args = (self_or_cls,) + args
+            k = _filtered_key(key, actual_fn, all_args, kwargs, ignore)
 
             try:
                 future = c[k]
@@ -263,15 +272,15 @@ def cachedmethod(
             if future is not None:
                 # If it's already done and successful, it's a definitive hit
                 if future.done() and future.exception() is None:
-                    print(f"Cache hit for {method.__name__}")
+                    print(f"Cache hit for {actual_fn.__name__}")
                     return future.result()
 
                 # If it's still running, we wait for it
                 if not future.done():
                     return await shield(future)
 
-            print(f"Cache miss for {method.__name__}")
-            coro = method(self, *args, **kwargs)
+            print(f"Cache miss for {actual_fn.__name__}")
+            coro = actual_fn(self_or_cls, *args, **kwargs)
 
             loop = asyncio.get_running_loop()
 

@@ -16,7 +16,7 @@ from cachetools.keys import hashkey, methodkey
 from loguru import logger
 
 # Setup Loguru for library use
-logger.disable("aiocachetools")
+logger.disable("async_cache")
 
 _KT = TypeVar("_KT")
 _T = TypeVar("_T")
@@ -155,14 +155,14 @@ def cached(
             if future is not None:
                 # 1. Check for a completed successful hit FIRST
                 if future.done() and future.exception() is None:
-                    print(f"Cache hit for {fn.__name__}")
+                    logger.debug(f"Cache hit for {fn.__name__}")
                     return future.result()
 
                 # 2. If it's still pending (not done), shield it and wait
                 if not future.done():
                     return await shield(future)
 
-            print(f"Cache miss for {fn.__name__}")
+            logger.debug(f"Cache miss for {fn.__name__}")
             coro = fn(*args, **kwargs)
 
             loop = asyncio.get_running_loop()
@@ -272,14 +272,14 @@ def cachedmethod(
             if future is not None:
                 # If it's already done and successful, it's a definitive hit
                 if future.done() and future.exception() is None:
-                    print(f"Cache hit for {actual_fn.__name__}")
+                    logger.debug(f"Cache hit for {actual_fn.__name__}")
                     return future.result()
 
                 # If it's still running, we wait for it
                 if not future.done():
                     return await shield(future)
 
-            print(f"Cache miss for {actual_fn.__name__}")
+            logger.debug(f"Cache miss for {actual_fn.__name__}")
             coro = actual_fn(self_or_cls, *args, **kwargs)
 
             loop = asyncio.get_running_loop()

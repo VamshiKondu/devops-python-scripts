@@ -1,9 +1,22 @@
 import asyncio
+from collections.abc import Generator
+from typing import Any
 
 import pytest
 from cachetools import TLRUCache
+from loguru import logger
 
 from async_cache import cached, cachedmethod
+
+
+@pytest.fixture
+def enabled_log() -> Generator[Any, Any, Any]:
+    """Fixture to enable loguru logging for async_cache during tests."""
+    # Enable before the test starts
+    logger.enable("async_cache")
+    yield
+    # Disable again after the test finished to keep other tests clean
+    logger.disable("async_cache")
 
 
 @pytest.mark.asyncio
@@ -150,7 +163,7 @@ async def test_cachemethod_staticmethod() -> None:
         call_count = 0
 
         @staticmethod
-        @cached(cache=TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 10))
+        @cached(cache=TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 10), ignore=("a",))
         async def static_multiply(a: int, b: int) -> int:
             MathOps.call_count += 1
             await asyncio.sleep(0.1)
@@ -165,7 +178,7 @@ async def test_cachemethod_staticmethod() -> None:
 
 
 @pytest.mark.asyncio
-async def test_classmethod_cache() -> None:
+async def test_classmethod_cache(enabled_log) -> None:
     """Test that the cached decorator works with class methods."""
 
     class MathOps:
@@ -173,17 +186,22 @@ async def test_classmethod_cache() -> None:
         __cache = TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 10)
 
         @classmethod
-        @cachedmethod(cache=lambda cls: cls._MathOps__cache, ignore=("cls",))
+        @cachedmethod(
+            cache=lambda cls: cls._MathOps__cache,
+            ignore=("a",),
+        )
         async def class_add(cls, a: int, b: int) -> int:
             cls.call_count += 1
             await asyncio.sleep(0.1)
             return a + b
 
-    result1 = await MathOps.class_add(4, 5)
-    result2 = await MathOps.class_add(4, 5)  # Should hit
+    result1 = await MathOps.class_add(a=4, b=5)
+    result2 = await MathOps.class_add(a=4, b=5)  # Should hit
+    result3 = await MathOps.class_add(0, b=4)  # Should hit
     assert result1 == 9
     assert result2 == 9
-    assert MathOps.call_count == 1  # Function called only once
+    assert result3 == 4
+    assert MathOps.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -195,7 +213,7 @@ async def test_instance_method_cache() -> None:
             self.call_count = 0
             self._cache = TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 10)
 
-        @cachedmethod(cache=lambda self: self._cache, ignore=("self",))
+        @cachedmethod(cache=lambda self: self._cache)
         async def increment(self, value: int) -> int:
             self.call_count += 1
             await asyncio.sleep(0.1)
@@ -204,7 +222,9 @@ async def test_instance_method_cache() -> None:
     counter = Counter()
     result1 = await counter.increment(5)
     result2 = await counter.increment(5)  # Should hit cache
+    result3 = await counter.increment(6)  # Should hit cache
 
     assert result1 == 6
     assert result2 == 6
-    assert counter.call_count == 1  # Function called only once
+    assert result3 == 7
+    assert counter.call_count == 2  # Function called only twice

@@ -16,7 +16,7 @@ from cachetools.keys import hashkey, methodkey
 from loguru import logger
 
 # Setup Loguru for library use
-logger.disable("async_cache")
+logger.disable(f"{__name__}")
 
 _KT = TypeVar("_KT")
 _T = TypeVar("_T")
@@ -245,7 +245,7 @@ def cachedmethod(
     def decorator(actual_fn: Callable[..., Awaitable]) -> Awaitable:
         actual_fn = actual_fn
 
-        if isinstance(actual_fn, staticmethod) or isinstance(actual_fn, classmethod):
+        if isinstance(actual_fn, (classmethod, staticmethod)):
             actual_fn = actual_fn.__func__
 
         if not iscoroutinefunction(actual_fn):

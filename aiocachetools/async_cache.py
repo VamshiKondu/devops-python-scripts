@@ -12,7 +12,7 @@ from typing import (
     TypeVar,
 )
 
-from cachetools.keys import hashkey, methodkey
+from cachetools.keys import hashkey
 from loguru import logger
 
 # Setup Loguru for library use
@@ -45,10 +45,7 @@ def apply_task_result_to_future(task: Task, future: Future) -> None:
 
 
 def _make_hashable(value: object) -> object:
-    """Return a hashable representation for value.
-
-    Primitive hashables are returned unchanged. For other objects return id(value).
-    """
+    """Return a hashable representation for value."""
     try:
         hash(value)
         return value
@@ -68,19 +65,17 @@ def _filtered_key(
     bound.apply_defaults()
 
     ignore_set = set(ignore) if ignore is not None else set()
-
     bound_names = list(bound.arguments.keys())
     numeric_ignores = {i for i in ignore_set if isinstance(i, int)}
     name_ignores = {i for i in ignore_set if isinstance(i, str)}
+
     for idx, name in enumerate(bound_names):
         if idx in numeric_ignores:
             name_ignores.add(name)
 
     values = []
-    for name, _ in sig.parameters.items():
-        if name not in bound.arguments:
-            continue
-        if name in name_ignores:
+    for name in sig.parameters:
+        if name not in bound.arguments or name in name_ignores:
             continue
         values.append(_make_hashable(bound.arguments[name]))
 
@@ -116,6 +111,8 @@ def cached(
     Example:
     -------
     ```python
+
+    ##Example of using `cached` with a TLRUCache and ignoring a parameter in the cache key.
     from cachetools import TLRUCache
     from async_cache import cached
     def ttu(key, value, time) -> float:
@@ -125,14 +122,30 @@ def cached(
         # Simulate a slow operation
         await asyncio.sleep(1)
         return param1 * 2
+
+    ##
+    from cachetools import TLRUCache
+    from async_cache import cached
+
+    def ttu(key, value, time) -> float:
+        return time + 10.0  # 10 seconds time-to-use
+
+    class StaticMethod:
+        call_count = 0
+        # Use a single underscore to avoid complex name mangling in decorators
+        _cache = TLRUCache(maxsize=10, ttu=lambda k, v, t: t + 10)
+
+        @staticmethod
+        @cached(cache=_cache, ignore=("b",))  # Use @cached and pass the cache directly
+        async def static_add(a: int, b: int) -> int:
+            StaticMethod.call_count += 1
+            await asyncio.sleep(0.1)
+            return a + b
     ```
 
     """
-    if info:
-        raise NotImplementedError("cachetools_async does not support `info`")
-
-    if lock is not None:
-        raise NotImplementedError("cachetools_async does not support `lock`")
+    if info or lock is not None:
+        raise NotImplementedError("aiocachetools does not support `info` or `lock`")
 
     def decorator(fn: Callable[..., Awaitable]) -> Awaitable:
         if not iscoroutinefunction(fn):
@@ -144,62 +157,36 @@ def cached(
                 return await fn(*args, **kwargs)
 
             k = _filtered_key(key, fn, args, kwargs, ignore)
-
-            try:
-                future = cache[k]
-            except KeyError:
-                future = None
-
-            # Inside your 'cached' decorator's wrapper:
+            future = cache.get(k)
 
             if future is not None:
-                # 1. Check for a completed successful hit FIRST
                 if future.done() and future.exception() is None:
                     logger.debug(f"Cache hit for {fn.__name__}")
                     return future.result()
-
-                # 2. If it's still pending (not done), shield it and wait
                 if not future.done():
                     return await shield(future)
 
             logger.debug(f"Cache miss for {fn.__name__}")
-            coro = fn(*args, **kwargs)
-
-            loop = asyncio.get_running_loop()
-
-            task = loop.create_task(coro)
-
-            f = loop.create_future()
+            f = asyncio.get_running_loop().create_future()
+            task = asyncio.create_task(fn(*args, **kwargs))
             task.add_done_callback(lambda t: apply_task_result_to_future(t, f))
 
             try:
                 cache[k] = f
             except ValueError:
-                # value too large
                 pass
 
             return await shield(f)
 
-        def cache_clear() -> None:
-            """Clear the cache."""
-            if cache is not None:
-                cache.clear()
-
-        wrapper.cache = cache
-        wrapper.cache_key = key
-        wrapper.cache_lock = None
-        wrapper.cache_clear = cache_clear
-        wrapper.cache_info = None
-
+        wrapper.cache_clear = lambda: cache.clear() if cache is not None else None
         return wrapper
 
-    return decorator  # type: ignore
+    return decorator
 
 
 def cachedmethod(
     cache: Callable[[Any], MutableMapping[_KT, Future] | None],
-    key: Callable[..., _KT] = methodkey,
-    lock: Callable[[Any], AbstractContextManager[Any]] | None = None,
+    key: Callable[..., _KT] = hashkey,  # Fix: Use hashkey to avoid redundant ignoring
     ignore: tuple[int | str, ...] | None = None,
 ) -> IdentityFunction:
     """Wrap a coroutine method to save results in a cache.
@@ -207,7 +194,7 @@ def cachedmethod(
     to exclude from the cache key.
 
     Args:
-     cache: A callable that takes the instance (self) and returns a cache mapping.
+     cache: A callable that takes the instance (self or cls) and returns a cache mapping.
      key: A callable to generate cache keys.
      lock: Not supported, raises NotImplementedError.
      ignore: A tuple of parameter names or indices to ignore in the cache key.
@@ -239,13 +226,12 @@ def cachedmethod(
     ```
 
     """
-    if lock is not None:
-        raise NotImplementedError("cachetools_async does not support `lock`")
 
     def decorator(actual_fn: Callable[..., Awaitable]) -> Awaitable:
-        actual_fn = actual_fn
-
-        if isinstance(actual_fn, (classmethod, staticmethod)):
+        # Descriptor Unwrapping
+        is_cls = isinstance(actual_fn, classmethod)
+        is_static = isinstance(actual_fn, staticmethod)
+        if is_cls or is_static:
             actual_fn = actual_fn.__func__
 
         if not iscoroutinefunction(actual_fn):
@@ -259,54 +245,34 @@ def cachedmethod(
             if c is None:
                 return await actual_fn(self_or_cls, *args, **kwargs)
 
-            # For methods, include 'self' in the bound args
-            # so ignore can refer to it by name or index 0
             all_args = (self_or_cls,) + args
             k = _filtered_key(key, actual_fn, all_args, kwargs, ignore)
-
-            try:
-                future = c[k]
-            except KeyError:
-                future = None
+            future = c.get(k)
 
             if future is not None:
-                # If it's already done and successful, it's a definitive hit
                 if future.done() and future.exception() is None:
                     logger.debug(f"Cache hit for {actual_fn.__name__}")
                     return future.result()
-
-                # If it's still running, we wait for it
                 if not future.done():
                     return await shield(future)
 
             logger.debug(f"Cache miss for {actual_fn.__name__}")
-            coro = actual_fn(self_or_cls, *args, **kwargs)
-
-            loop = asyncio.get_running_loop()
-
-            future = loop.create_future()
-            task = loop.create_task(coro)
-            task.add_done_callback(lambda t: apply_task_result_to_future(t, future))
+            f = asyncio.get_running_loop().create_future()
+            task = asyncio.create_task(actual_fn(self_or_cls, *args, **kwargs))
+            task.add_done_callback(lambda t: apply_task_result_to_future(t, f))
 
             try:
-                c[k] = future
+                c[k] = f
             except ValueError:
-                # value too large
                 pass
 
-            return await shield(future)
+            return await shield(f)
 
-        def cache_clear(self) -> None:
-            """Clear the cache."""
-            c = cache(self)
-            if c is not None:
-                c.clear()
-
-        wrapper.cache = cache
-        wrapper.cache_key = key
-        wrapper.cache_lock = None
-        wrapper.cache_clear = cache_clear
-
+        # Re-wrap if necessary
+        if is_cls:
+            return classmethod(wrapper)
+        if is_static:
+            return staticmethod(wrapper)
         return wrapper
 
-    return decorator  # type: ignore
+    return decorator
